@@ -129,7 +129,6 @@ class HMM:
                 
             likelihoods.append(torch.tensor(likelihood,dtype=torch.double))
             assert likelihoods[-1].shape == (self.hidden_dim,)
-
         return likelihoods
             
     def E_step(self, obs):
@@ -192,7 +191,6 @@ class HMM:
         self.A = torch.sum(chis, axis=0)
         self.A = self.A/torch.unsqueeze(torch.sum(self.A, axis=-1), -1)
 
-
         # obs values weighted by gammas w_obs[n][k] corresponds to value n
         # weighted by gamma[n][k]
         summed_gammas = torch.sum(gammas, 0) 
@@ -207,11 +205,28 @@ class HMM:
         assert self.sigma.shape == (self.hidden_dim, self.emission_dim, self.emission_dim)
 
         
-    def viterbi(self):
-        return None 
-        
+    def viterbi(self, obs):
+        likelihoods = self.calculate_local_likelihoods(obs)
+        omegas = [torch.log(self.pi[0]) + torch.log(likelihoods[0])]
+        paths = []
 
+        for i in range(1, self.n):
+            x = torch.log(self.A) + torch.unsqueeze(omegas[-1], -1)
+            vals, index = torch.max(x, 0)
+            omegas.append(vals + torch.log(likelihoods[i]))
+            paths.append(index)
+            
+        max_log_prob = torch.max(omegas[-1])
+        likeley_states = [torch.argmax(omegas[-1])]
 
+        paths.reverse()
+        for step in paths:
+            likeley_states.append(step[likeley_states[-1]])
+
+        likeley_states.reverse()
+        likeley_states = [x.numpy() for x in likeley_states]
+        return max_log_prob, likeley_states
+ 
         
     def fit(self, obs, eps):
         """
@@ -220,13 +235,18 @@ class HMM:
 
         self.init_params(obs) 
         old_log_likelihood = -float('INF')
-        is_improvement = True 
-        for i in range(10): 
+        is_improvement = True
+        step = 0
+        
+        while is_improvement: 
             gammas, chi = self.E_step(obs)
             self.M_step(obs, gammas, chi)
-            is_improvement = self.log_likelihood - old_log_likelihood> eps
-            print(self.log_likelihood)
+
+            is_improvement = self.log_likelihood - old_log_likelihood > eps
             old_log_likelihood = self.log_likelihood
+            step += 1
+            print(f'Step {step} - log_likelihood {self.log_likelihood.item()}')
+
     
             
         
@@ -242,7 +262,7 @@ n = 3000
 
 mu = torch.unsqueeze(torch.arange(hidden_dim) * 10.0,-1)
 sigma = torch.ones(hidden_dim,1,1)* 1.0
-A = torch.tensor([[0.7, 0.3],[0.3,0.7]])
+A = torch.tensor([[0.9, 0.1],[0.1,0.9]])
 hmm = HMM(n= n, mu=mu, sigma=sigma,hidden_dim=hidden_dim,A= A)
 pi = hmm.pi 
 z, x = hmm.sample()
@@ -252,8 +272,11 @@ z, x = hmm.sample()
 
 
 from hmmlearn import hmm as hmms
-model = hmms.GaussianHMM(n_components=2, covariance_type="full", n_iter=100, verbose=2)
+model = hmms.GaussianHMM(n_components=2, covariance_type="full", n_iter=100, verbose=2,algorithm='viterbi')
 model.fit(x)
+log_prob, za_pred = model.decode(x, algorithm='viterbi')
+print('log_prob', log_prob)
+
 # model.startprob_ = pi[0].numpy()
 # model.means_ = hmm.mu.numpy()
 # model.covars_ = hmm.sigma.numpy()
@@ -266,8 +289,11 @@ model.fit(x)
 hmm = HMM(n= n,hidden_dim=hidden_dim, sigma=sigma*10)
 print('A', hmm.A)
 print('sigma', sigma) 
+
 hmm.fit(x, 0.0001)
-infered_A = hmm.A
+log_prob, z_pred = hmm.viterbi(x)
+print('log_prob', log_prob)
+
 
 # print(A)
 # print(infered_A)
@@ -277,7 +303,10 @@ infered_A = hmm.A
 
 ###############################
 
-# import matplotlib.pyplot as plt
-# from plot import plot_state_diagram
-# plot_state_diagram(z,x)
+import matplotlib.pyplot as plt
+from plot import plot_state_diagram
+
+print(x)
+plot_state_diagram(z_pred,x.numpy())
+plot_state_diagram(za_pred,x.numpy())
 
