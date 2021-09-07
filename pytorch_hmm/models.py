@@ -1,20 +1,15 @@
 import torch
-import torch.distributions as tdist
-import pyro.distributions as dist
-import pyro 
-from torch.distributions.multivariate_normal import MultivariateNormal
-from sklearn.mixture import GaussianMixture
-from scipy.stats import multivariate_normal
+from torch.distributions.categorical import Categorical
+from torch.distributions.dirichlet import Dirichlet
 
 class HMM:
-    def __init__(self, hidden_dim, n, emission_dim=1, A=None, mu=None, sigma=None, pi=None):
+    def __init__(self, emission, hidden_dim, n, emission_dim=1, A=None,  pi=None):
         """
         Arguments: 
         - hidden_dim: dimension of n
         - n: length of the timeseries 
         - A: matrix of transition probabilities
-        - mu: means for gaussian emissions (
-        - sigma: covariance matrices for gaussian emissions
+        - emission: An object representing emision distributions
         """
 
         # Deal with dimmensions
@@ -24,16 +19,12 @@ class HMM:
 
         # Parameters of the model 
         self.A = self.init_A(A)
-        self.mu = self.init_mu(mu)
-        self.sigma = self.init_sigma(sigma)
         self.pi = self.init_pi(pi)
 
         # Additional stuff 
         self._log_likelihood = None 
-        self.emission = multivariate_normal
+        self.emission = emission
         
-        assert self.mu.shape == (hidden_dim, emission_dim)
-        assert self.sigma.shape == (hidden_dim, emission_dim, emission_dim)
         assert self.A.shape == (hidden_dim, hidden_dim)
         assert self.pi.shape == (1, hidden_dim)
 
@@ -43,66 +34,27 @@ class HMM:
         Generates data from the hmm  and returns a tuple with 
         latent and observed variables 
         """
-        z = [pyro.sample('z_0', dist.Categorical(self.pi)).item()]
+        z = [Categorical(self.pi).sample().item()]
         for i in range(1, self.n):
-            z.append(
-                pyro.sample(f'z_{i}',dist.Categorical(self.A[z[-1]])).item()
-            )
+            z.append(Categorical(self.A[z[-1]]).sample().item())
 
         x = []
         for i in range(len(z)):
-            x.append(
-                pyro.sample(f'x_{i}', dist.Normal(self.mu[z[i]],self.sigma[z[i]])).item()
-            )
-
-        return torch.tensor(z,dtype=torch.double), torch.tensor([x], dtype=torch.double).T
+            x.append(self.emission.sample(z[i]))
+            
+        return torch.tensor(z), torch.tensor([x]).T
 
     def init_A(self, A):
         if A == None:
-            dirichlet = tdist.dirichlet.Dirichlet(
-                torch.ones(self.hidden_dim, self.hidden_dim) * 5 
-            )
+            dirichlet = Dirichlet(torch.ones(self.hidden_dim, self.hidden_dim)*5)
             A = dirichlet.sample()
-
-        return A.double()
-
-    def init_mu(self, mu):
-        if mu == None:
-            normal = MultivariateNormal(torch.zeros(self.hidden_dim,self.emission_dim), torch.eye(self.emission_dim))
-            mu = normal.sample()
-
-        return mu.double()
-
-    def init_sigma(self, sigma):
-        if sigma == None:
-            lkj = tdist.lkj_cholesky.LKJCholesky(self.emission_dim).expand(self.hidden_dim)
-            l = lkj.sample()
-            corr = l @ l.permute(0,2,1) 
-            diag = torch.diag(torch.diagonal(corr))
-            sigma = diag @ corr @ diag 
-        return sigma.double()
+        return A
 
     def init_pi(self, pi):
         if pi == None:
-            dirichlet = tdist.dirichlet.Dirichlet(
-                torch.ones(1, self.hidden_dim) * 5
-            )
+            dirichlet = Dirichlet(torch.ones(1, self.hidden_dim) * 5)    
             pi = dirichlet.sample()
-        return pi.double()
-
-    def init_params(self, obs):
-        """
-        Initializes the parameters of the normal distribution using EM on a GMM
-        
-        Arguments:
-        - obs: tensor shape [self.n, self.emission_dim]
-        """
-        
-        gmm = GaussianMixture(n_components=self.hidden_dim)
-        gmm.fit(obs.numpy())
-        self.mu = torch.tensor(gmm.means_).double()
-        self.sigma = torch.tensor(gmm.covariances_).double()
-        
+        return pi
 
     @property
     def log_likelihood(self):
@@ -123,11 +75,8 @@ class HMM:
         for i in range(len(obs)):
             likelihood = []
             for j in range(self.hidden_dim):
-                likelihood.append(
-                        self.emission(self.mu[j].numpy(), self.sigma[j].numpy()).pdf(obs[i].numpy())
-                )
-                
-            likelihoods.append(torch.tensor(likelihood,dtype=torch.double))
+                likelihood.append(self.emission.prob(j, obs[i]))
+            likelihoods.append(torch.tensor(likelihood))
             assert likelihoods[-1].shape == (self.hidden_dim,)
         return likelihoods
             
@@ -177,7 +126,7 @@ class HMM:
             result = torch.outer(alphas[i], result)
             chis.append(torch.unsqueeze(result * self.A / c[i+1],0))
 
-        return torch.cat(gammas, 0).double(), torch.cat(chis, 0).double()
+        return torch.cat(gammas, 0), torch.cat(chis, 0)
 
     
     def M_step(self, obs, gammas, chis):
@@ -233,12 +182,13 @@ class HMM:
         Performs MLE estimation on the paramaters of the HMM
         """
 
-        self.init_params(obs) 
+        self.emission.init_params(obs)
+        
         old_log_likelihood = -float('INF')
         is_improvement = True
         step = 0
         
-        while is_improvement: 
+        while is_improvement:
             gammas, chi = self.E_step(obs)
             self.M_step(obs, gammas, chi)
 
@@ -255,15 +205,19 @@ class HMM:
                 
     
         
-
+from emissions import NormalEmission
 
 hidden_dim = 2
+emission_dim = 1
+
 n = 3000
 
 mu = torch.unsqueeze(torch.arange(hidden_dim) * 10.0,-1)
 sigma = torch.ones(hidden_dim,1,1)* 1.0
 A = torch.tensor([[0.9, 0.1],[0.1,0.9]])
-hmm = HMM(n= n, mu=mu, sigma=sigma,hidden_dim=hidden_dim,A= A)
+
+emission = NormalEmission(hidden_dim=hidden_dim, emission_dim=emission_dim, mu=mu, sigma=sigma)
+hmm = HMM(n= n, emission=emission, hidden_dim=hidden_dim, A= A)
 pi = hmm.pi 
 z, x = hmm.sample()
 # hmm.E_step(x)
@@ -286,7 +240,7 @@ print('log_prob', log_prob)
 
 
 
-hmm = HMM(n= n,hidden_dim=hidden_dim, sigma=sigma*10)
+hmm = HMM(n= n,hidden_dim=hidden_dim, emission=emission)
 print('A', hmm.A)
 print('sigma', sigma) 
 
@@ -295,10 +249,10 @@ log_prob, z_pred = hmm.viterbi(x)
 print('log_prob', log_prob)
 
 
-# print(A)
-# print(infered_A)
+print(A)
+print(hmm.A)
 
-# print(hmm.mu)
+print(hmm.mu)
 
 
 ###############################
