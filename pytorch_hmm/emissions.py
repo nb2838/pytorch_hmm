@@ -17,6 +17,10 @@ class NormalEmission:
         self.mu = mu
         self.sigma = sigma
 
+    @property
+    def params(self):
+        return {'mu':self.mu, 'sigma': self.sigma}
+
     def sample(self, i):
         """
         Draws a sample from the ith mixture
@@ -39,6 +43,20 @@ class NormalEmission:
         gmm.fit(obs.numpy())
         self.mu = torch.tensor(gmm.means_).float()
         self.sigma = torch.tensor(gmm.covariances_).float()
+
+    def M_step(self, obs, gammas, chis):
+        """
+        Impelements the maximization step for the parameters of the normal distribution. 
+        """
+        normalizer = 1/torch.sum(gammas, 0)
+        self.mu = torch.einsum('ik,ij,k->kj', gammas, obs, normalizer)
+        assert self.mu.shape == (self.hidden_dim, self.emission_dim)
+
+        centered = torch.unsqueeze(obs,1) - self.mu
+        self.sigma = torch.einsum('nk,nki,nkj,k->kij', gammas, centered, centered, normalizer)
+        assert self.sigma.shape == (self.hidden_dim, self.emission_dim, self.emission_dim)
+
+
 
 
     

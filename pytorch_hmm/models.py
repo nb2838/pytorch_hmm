@@ -57,6 +57,10 @@ class HMM:
         return pi
 
     @property
+    def params(self):
+        return {**{'A': self.A, 'pi':self.pi}, **self.emission.params}
+
+    @property
     def log_likelihood(self):
         if not self._log_likelihood:
             raise UnboundLocalError('The E step has to be called at least once')
@@ -139,20 +143,7 @@ class HMM:
         self.pi = gammas[:1]/torch.sum(gammas[0])
         self.A = torch.sum(chis, axis=0)
         self.A = self.A/torch.unsqueeze(torch.sum(self.A, axis=-1), -1)
-
-        # obs values weighted by gammas w_obs[n][k] corresponds to value n
-        # weighted by gamma[n][k]
-        summed_gammas = torch.sum(gammas, 0) 
-        w_obs = torch.unsqueeze(obs, 1) * torch.unsqueeze(gammas, -1)
-        self.mu = torch.sum(w_obs, 0)/torch.unsqueeze(summed_gammas, -1)
-        assert self.mu.shape == (self.hidden_dim, self.emission_dim)
-
-        w_mu = self.mu * torch.unsqueeze(gammas, -1)
-        w_obs_sub_mu  = (w_obs - w_mu).permute(1,2,0)
-        obs_sub_mu = (torch.unsqueeze(obs, 1) - self.mu).permute(1,0,2)
-        self.sigma = w_obs_sub_mu @ obs_sub_mu/ torch.unsqueeze(torch.unsqueeze(summed_gammas,-1),-1)
-        assert self.sigma.shape == (self.hidden_dim, self.emission_dim, self.emission_dim)
-
+        self.emission.M_step(obs, gammas, chis)
         
     def viterbi(self, obs):
         likelihoods = self.calculate_local_likelihoods(obs)
@@ -252,7 +243,7 @@ print('log_prob', log_prob)
 print(A)
 print(hmm.A)
 
-print(hmm.mu)
+print(hmm.params)
 
 
 ###############################
